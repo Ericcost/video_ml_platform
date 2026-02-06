@@ -1,8 +1,3 @@
-Bien sûr 🙂
-Voici un README.md propre, clair et minimal, adapté à quelqu’un qui clone le repo et veut le lancer sans contexte.
-
-Tu peux le copier-coller tel quel à la racine du projet.
-
 # video-ml-platform
 
 Base minimale d’une plateforme backend pour analyse vidéo (sans ML pour l’instant).
