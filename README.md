@@ -1,153 +1,143 @@
-Bien sûr 🙂
-Voici un README.md propre, clair et minimal, adapté à quelqu’un qui clone le repo et veut le lancer sans contexte.
+# 🏐 Volleyball Analyzer — Niveau 0
 
-Tu peux le copier-coller tel quel à la racine du projet.
-
-# video-ml-platform
-
-Base minimale d’une plateforme backend pour analyse vidéo (sans ML pour l’instant).
-
-Objectif actuel :
-- Repo propre
-- Backend Dockerisé
-- Service FastAPI fonctionnel
-- Endpoint HTTP recevant une requête JSON et validant son schéma
-
-👉 Aucun traitement ML, aucune vidéo, aucune persistance pour l’instant.
+Système d'analyse vidéo de volleyball basé sur l'IA.
+Lancé entièrement avec **une seule commande**.
 
 ---
 
-## 🧱 Architecture
+## 🚀 Démarrage
 
+```bash
+# 1. Cloner / se placer dans le dossier
+cd volleyball-analyzer
 
+# 2. Lancer tout le système
+docker-compose up --build
 
-video-ml-platform/
+# 3. Ouvrir l'interface
+open http://localhost:8501
+```
+
+C'est tout. ✅
+
+---
+
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────┐
+│                   docker-compose                     │
+│                                                      │
+│  ┌──────────────┐    ┌──────────────────────────┐   │
+│  │   Frontend   │    │      API (FastAPI)        │   │
+│  │  (Streamlit) │───▶│  POST /upload             │   │
+│  │   :8501      │    │  GET  /status/{id}        │   │
+│  └──────────────┘    │  GET  /result/{id}        │   │
+│                      │  GET  /video/{id}  :8000  │   │
+│                      └────────────┬─────────────┘   │
+│                                   │ Celery task      │
+│                         ┌─────────▼──────────┐      │
+│                         │   Worker (Celery)   │      │
+│                         │  YOLOv8n detection  │      │
+│                         │  IoU tracking       │      │
+│                         │  Action heuristics  │      │
+│                         └─────────┬──────────┘      │
+│              ┌────────────────────┼──────────┐       │
+│    ┌─────────▼───┐  ┌────────────▼──┐ ┌──────▼────┐ │
+│    │    Redis    │  │   MongoDB    │ │   MinIO   │ │
+│    │  (queue)   │  │  (résultats) │ │  (vidéos) │ │
+│    └─────────────┘  └──────────────┘ └───────────┘ │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🤖 Pipeline ML
+
+```
+Vidéo uploadée
+      ↓
+[1] YOLOv8n         Détecte ballon (COCO class 32) + joueurs (class 0)
+      ↓
+[2] Calibration     Auto-détecte les 2 couleurs de maillot dominantes → team_a / team_b
+      ↓
+[3] IoU Tracker     Suit les objets entre frames, assigne des track_id stables
+      ↓
+[4] BallTrajectory  Fenêtre glissante de 60 frames : vitesse, direction, hauteur
+      ↓
+[5] ActionClassifier Règles géométriques → serve / pass / set / attack / block / dig
+      ↓
+[6] EventSegmenter  Regroupe les frames en événements (min 8 frames stables)
+      ↓
+Vidéo annotée + JSON de résultats
+```
+
+---
+
+## 🎯 Actions détectées
+
+| Action  | Critères heuristiques                                         |
+|---------|---------------------------------------------------------------|
+| Serve   | Ballon près de la ligne de fond, haute vitesse, trajectoire horizontale |
+| Attack  | Vitesse élevée, trajectoire descendante, proche du filet      |
+| Block   | Ballon rebondit vers le haut près du filet, bras levés        |
+| Set     | Vitesse lente, arc montant, zone médiane du terrain           |
+| Dig     | Ballon très bas, rebond ascendant depuis le sol               |
+| Pass    | Vitesse modérée, trajectoire montante                         |
+
+---
+
+## 🔌 API REST
+
+| Méthode | Endpoint           | Description                    |
+|---------|--------------------|--------------------------------|
+| POST    | `/upload`          | Upload vidéo → retourne job_id |
+| GET     | `/status/{job_id}` | Statut + progression (0→1)     |
+| GET     | `/result/{job_id}` | Résultat JSON complet          |
+| GET     | `/video/{job_id}`  | Stream vidéo annotée           |
+| GET     | `/health`          | Health check                   |
+
+---
+
+## 📁 Structure du projet
+
+```
+volleyball-analyzer/
 ├── docker-compose.yml
-└── backend/
-├── Dockerfile
-├── main.py
-└── models.py
-
-
----
-
-## 🚀 Stack technique
-
-- Python 3.11
-- FastAPI
-- Uvicorn
-- Docker & Docker Compose
-
----
-
-## 📦 Fonctionnalités actuelles
-
-### Backend API
-
-- Démarre via Docker
-- Exposé sur `http://localhost:8000`
-- Endpoint POST `/analyze`
-- Validation automatique du schéma JSON via Pydantic
+├── api/
+│   ├── Dockerfile
+│   ├── main.py          ← FastAPI endpoints
+│   ├── models.py        ← Pydantic schemas
+│   └── requirements.txt
+├── worker/
+│   ├── Dockerfile
+│   ├── tasks.py         ← Celery tasks
+│   ├── detector.py      ← YOLOv8 detection + team color
+│   ├── tracker.py       ← IoU tracking + ball trajectory
+│   ├── action_classifier.py ← Heuristic action classification
+│   ├── video_processor.py   ← Orchestration pipeline
+│   └── requirements.txt
+├── frontend/
+│   ├── Dockerfile
+│   ├── app.py           ← Streamlit UI
+│   └── requirements.txt
+└── models/              ← YOLOv8 weights (auto-downloaded at build)
+```
 
 ---
 
-## 📡 API
+## ⚡ Performances CPU
 
-### `POST /analyze`
+Sur MacOS M-series ou Intel i7 :
+- Traitement : ~2–5× la durée de la vidéo (ex : vidéo 1min → ~2–5min)
+- `frame_skip=2` est activé par défaut (traite 1 frame sur 2, accélère ×2)
+- Pour plus de précision : changer `frame_skip=1` dans `worker/tasks.py`
+- Pour plus de vitesse : `frame_skip=3` ou `frame_skip=4`
 
-#### Payload attendu
+---
 
-```json
-{
-  "video_id": "test",
-  "excluded_timeframes": []
-}
+## 🔧 Prochaines étapes (Niveau 1)
 
-
-video_id : string
-
-excluded_timeframes : liste (vide pour l’instant)
-
-Réponse
-{
-  "status": "received"
-}
-
-▶️ Lancer le projet
-Prérequis
-
-Docker
-
-Docker Compose (v2)
-
-Vérification :
-
-docker --version
-docker compose version
-
-Démarrage
-
-À la racine du repo :
-
-docker compose up --build
-
-
-Le backend est alors accessible sur :
-
-http://localhost:8000
-
-Test rapide avec curl
-curl -X POST http://localhost:8000/analyze \
-  -H "Content-Type: application/json" \
-  -d '{
-    "video_id": "test",
-    "excluded_timeframes": []
-  }'
-
-
-Réponse attendue :
-
-{"status":"received"}
-
-🛠️ Commandes utiles
-
-Arrêter les containers :
-
-docker compose down
-
-
-Relancer avec rebuild :
-
-docker compose up --build
-
-
-Voir les logs :
-
-docker compose logs -f backend
-
-🧠 Notes de structure (important)
-
-Le backend n’est pas encore un package Python
-
-Les imports sont absolus (ex: from models import AnalyzeRequest)
-
-Le service est lancé via :
-
-uvicorn main:app
-
-
-👉 Ne pas utiliser d’imports relatifs (from .models ...) dans cette configuration.
-
-🛣️ Prochaines évolutions possibles
-
-Typage strict de excluded_timeframes
-
-Hot reload pour le développement
-
-Structuration en package (app/)
-
-Ajout de traitements asynchrones
-
-Intégration ML / worker séparé
-
-Stockage / file d’attente
+- Auth par token dans le header HTTP
+- Déploiement automatique sur VM
+- Tracking usage par utilisateur
