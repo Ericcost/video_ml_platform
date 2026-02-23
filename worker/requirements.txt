@@ -1,0 +1,9 @@
+celery>=5.3.6
+redis>=5.0.4
+pymongo>=4.7.2
+minio>=7.2.7
+ultralytics>=8.2.18
+opencv-python-headless>=4.9.0.80
+numpy>=1.26.4
+scipy>=1.13.0
+Pillow>=10.3.0

@@ -1,5 +1,121 @@
+
 services:
-  backend:
-    build: ./backend
+
+  # ── Message broker ───────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: vb_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── Storage (videos + annotated outputs) ─────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: vb_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: volleyball
+      MINIO_ROOT_PASSWORD: volleyball123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Database (job results + metadata) ────────────────────────────
+  mongodb:
+    image: mongo:7
+    container_name: vb_mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: volleyball
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── REST API ──────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: vb_api
     ports:
       - "8000:8000"
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      MONGO_URL: mongodb://mongodb:27017
+      MINIO_URL: minio:9000
+      MINIO_ACCESS_KEY: volleyball
+      MINIO_SECRET_KEY: volleyball123
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./api:/app
+
+  # ── ML Worker ─────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    container_name: vb_worker
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      MONGO_URL: mongodb://mongodb:27017
+      MINIO_URL: minio:9000
+      MINIO_ACCESS_KEY: volleyball
+      MINIO_SECRET_KEY: volleyball123
+    depends_on:
+      redis:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - ./worker:/app
+      - ./models:/models
+    # CPU-friendly: limit to avoid freezing the machine
+    deploy:
+      resources:
+        limits:
+          cpus: "3.0"
+          memory: 4G
+
+  # ── Frontend ──────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: vb_frontend
+    ports:
+      - "8501:8501"
+    environment:
+      API_URL: http://api:8000
+    depends_on:
+      - api
+    volumes:
+      - ./frontend:/app
+
+volumes:
+  minio_data:
+  mongo_data:
