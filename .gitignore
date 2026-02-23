@@ -211,3 +211,9 @@ __marimo__/
 
 # Videos
 videos/
+
+# Models
+models/
+
+# Prompts
+prompts/

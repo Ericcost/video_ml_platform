@@ -17,17 +17,19 @@ from typing import Optional
 COCO_PERSON = 0
 COCO_BALL   = 32   # sports ball
 
-# HSV ranges for rough team color detection
-# These will be auto-calibrated from the first frames
+# HSV ranges for jersey color detection.
+# Red wraps around in HSV so it needs two ranges merged via bitwise OR.
+# Thresholds are intentionally a bit loose to handle gym/indoor lighting.
 COLOR_PROFILES = {
-    "red":    ([0, 100, 100],   [10, 255, 255]),
-    "blue":   ([100, 100, 50],  [130, 255, 255]),
-    "white":  ([0, 0, 200],     [180, 30, 255]),
-    "black":  ([0, 0, 0],       [180, 255, 50]),
-    "yellow": ([20, 100, 100],  [35, 255, 255]),
-    "green":  ([40, 70, 70],    [80, 255, 255]),
-    "orange": ([10, 100, 100],  [20, 255, 255]),
-    "purple": ([130, 50, 50],   [160, 255, 255]),
+    "red":    ([0,   80,  80],  [10,  255, 255]),
+    "red2":   ([165, 80,  80],  [180, 255, 255]),   # red upper wrap-around
+    "blue":   ([95,  80,  40],  [135, 255, 255]),
+    "white":  ([0,   0,   170], [180, 55,  255]),
+    "black":  ([0,   0,   0],   [180, 255, 60]),
+    "yellow": ([18,  80,  80],  [38,  255, 255]),
+    "green":  ([35,  60,  60],  [85,  255, 255]),
+    "orange": ([8,   80,  80],  [20,  255, 255]),
+    "purple": ([125, 40,  40],  [165, 255, 255]),
 }
 
 
@@ -67,7 +69,7 @@ class FrameDetections:
 
 
 class VolleyballDetector:
-    def __init__(self, model_path: str = "yolov8n.pt", device: str = "cpu"):
+    def __init__(self, model_path: str = "../models/yolov8n.pt", device: str = "cpu"):
         self.model  = YOLO(model_path)
         self.device = device
         # Team color calibration (set after first N frames)
@@ -132,14 +134,20 @@ class VolleyballDetector:
         hsv  = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         best_color, best_score = "unknown", 0
 
+        # Merge red2 into red (HSV wrap-around)
+        color_scores: dict[str, float] = {}
         for color_name, (lower, upper) in COLOR_PROFILES.items():
             mask  = cv2.inRange(hsv, np.array(lower), np.array(upper))
-            score = float(np.sum(mask)) / (mask.size + 1e-6)
-            if score > best_score:
-                best_score  = score
-                best_color  = color_name
+            score = float(np.sum(mask)) / (mask.size * 255 + 1e-6)   # normalise 0→1
+            base  = "red" if color_name == "red2" else color_name
+            color_scores[base] = color_scores.get(base, 0.0) + score
 
-        return best_color if best_score > 0.1 else "unknown"
+        for color_name, score in color_scores.items():
+            if score > best_score:
+                best_score = score
+                best_color = color_name
+
+        return best_color if best_score > 0.05 else "unknown"
 
     def calibrate_teams(self, color_counts: dict[str, int]) -> dict[str, str]:
         """

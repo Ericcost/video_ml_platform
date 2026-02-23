@@ -190,7 +190,7 @@ class EventSegmenter:
                 duration = timestamp - self._start_time
                 if duration >= self.MIN_EVENT_DURATION and self._current_action != ActionType.OTHER:
                     self.events.append({
-                        "action_type":   self._current_action,
+                        "action_type":   self._current_action.value,
                         "start_frame":   self._start_frame,
                         "end_frame":     frame_number,
                         "start_time":    self._start_time,
@@ -208,7 +208,7 @@ class EventSegmenter:
         if self._stable_count >= self.MIN_STABLE_FRAMES \
                 and self._current_action != ActionType.OTHER:
             self.events.append({
-                "action_type":  self._current_action,
+                "action_type":  self._current_action.value,
                 "start_frame":  self._start_frame,
                 "end_frame":    final_frame,
                 "start_time":   self._start_time,

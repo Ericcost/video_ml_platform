@@ -23,7 +23,7 @@ from pymongo import MongoClient
 from minio import Minio
 from minio.error import S3Error
 
-from api.models import JobResponse, JobStatus, AnalysisResult
+from models import JobResponse, JobStatus, AnalysisResult
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)

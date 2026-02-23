@@ -1,35 +1,29 @@
 """
-app.py — Volleyball Analyzer Frontend
-Clean, professional Streamlit interface with:
-  - Video upload
-  - Live progress tracking
-  - Annotated video playback
-  - Interactive filters (by action, player, team, time range)
-  - Timeline + statistics charts
+app.py — Volleyball Analyzer Frontend  v2
+Fixes:
+  - Vidéo annotée : lue depuis MinIO en bytes et passée à st.video()
+  - Timeline : utilise go.Bar horizontal (px.timeline nécessite des dates)
+  - Gestion propre du cas "0 events"
 """
 
 import time
 import httpx
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
 API_URL = "http://api:8000"
 
-# ── Action metadata ───────────────────────────────────────────────────────────
 ACTION_META = {
-    "serve":  {"label": "Serve",   "icon": "🏐", "color": "#6366f1"},
-    "pass":   {"label": "Pass",    "icon": "🤝", "color": "#22c55e"},
-    "set":    {"label": "Set",     "icon": "🙌", "color": "#f59e0b"},
-    "attack": {"label": "Attack",  "icon": "⚡", "color": "#ef4444"},
-    "block":  {"label": "Block",   "icon": "🚧", "color": "#8b5cf6"},
-    "dig":    {"label": "Dig",     "icon": "🤸", "color": "#06b6d4"},
-    "other":  {"label": "Other",   "icon": "❓", "color": "#9ca3af"},
+    "serve":  {"label": "Serve",  "icon": "🏐", "color": "#6366f1"},
+    "pass":   {"label": "Pass",   "icon": "🤝", "color": "#22c55e"},
+    "set":    {"label": "Set",    "icon": "🙌", "color": "#f59e0b"},
+    "attack": {"label": "Attack", "icon": "⚡", "color": "#ef4444"},
+    "block":  {"label": "Block",  "icon": "🚧", "color": "#8b5cf6"},
+    "dig":    {"label": "Dig",    "icon": "🤸", "color": "#06b6d4"},
+    "other":  {"label": "Other",  "icon": "❓", "color": "#9ca3af"},
 }
 
-# ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Volleyball Analyzer",
     page_icon="🏐",
@@ -39,134 +33,85 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
   html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
 
   .hero {
-    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
-    border: 1px solid #334155;
-    border-radius: 16px;
-    padding: 2.5rem 3rem;
-    text-align: center;
-    margin-bottom: 2rem;
+    background: linear-gradient(135deg, #0f172a, #1e293b);
+    border: 1px solid #334155; border-radius: 16px;
+    padding: 2rem 3rem; text-align: center; margin-bottom: 1.5rem;
   }
-  .hero h1 { font-size: 2.4rem; font-weight: 800; color: #f8fafc; margin: 0; }
-  .hero p  { color: #94a3b8; margin-top: .5rem; font-size: 1.05rem; }
+  .hero h1 { font-size: 2.2rem; font-weight: 800; color: #f8fafc; margin: 0; }
+  .hero p  { color: #94a3b8; margin-top: .4rem; }
 
   .stat-card {
-    background: #1e293b;
-    border: 1px solid #334155;
-    border-radius: 12px;
-    padding: 1.2rem 1.5rem;
-    text-align: center;
+    background: #1e293b; border: 1px solid #334155;
+    border-radius: 12px; padding: 1.1rem 1.4rem; text-align: center;
   }
-  .stat-card .val { font-size: 2rem; font-weight: 700; color: #f1f5f9; }
-  .stat-card .lbl { font-size: .8rem; color: #64748b; text-transform: uppercase; letter-spacing: .05em; margin-top: .2rem; }
+  .stat-card .val { font-size: 1.8rem; font-weight: 700; color: #f1f5f9; }
+  .stat-card .lbl { font-size: .75rem; color: #64748b; text-transform: uppercase; letter-spacing: .05em; }
 
   .event-row {
-    background: #1e293b;
-    border: 1px solid #334155;
-    border-radius: 10px;
-    padding: .9rem 1.2rem;
-    margin-bottom: .5rem;
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    cursor: pointer;
-    transition: border-color .15s;
+    background: #1e293b; border: 1px solid #334155;
+    border-radius: 10px; padding: .8rem 1.1rem; margin-bottom: .4rem;
+    display: flex; align-items: center; gap: .8rem;
   }
-  .event-row:hover { border-color: #6366f1; }
-  .event-time { font-size: .75rem; color: #64748b; font-variant-numeric: tabular-nums; min-width: 70px; }
-  .event-badge {
-    border-radius: 6px;
-    padding: 3px 10px;
-    font-size: .78rem;
-    font-weight: 600;
-    white-space: nowrap;
-  }
-  .event-desc { font-size: .82rem; color: #94a3b8; flex: 1; }
-  .event-conf { font-size: .75rem; color: #475569; min-width: 60px; text-align: right; }
+  .event-time  { font-size: .75rem; color: #64748b; min-width: 65px; font-variant-numeric: tabular-nums; }
+  .event-badge { border-radius: 6px; padding: 2px 9px; font-size: .75rem; font-weight: 600; white-space: nowrap; }
+  .event-dur   { font-size: .75rem; color: #475569; margin-left: auto; }
 
-  .upload-zone {
-    border: 2px dashed #334155;
-    border-radius: 14px;
-    padding: 3rem;
-    text-align: center;
-    background: #0f172a;
+  .disclaimer  {
+    background: #fef3c7; border: 1px solid #f59e0b;
+    border-radius: 8px; padding: .6rem 1rem; font-size: .78rem; color: #92400e; margin-top: 1rem;
   }
-
-  .filter-chip {
-    display: inline-block;
-    border-radius: 20px;
-    padding: 4px 14px;
-    font-size: .78rem;
-    font-weight: 600;
-    margin: 3px;
-    cursor: pointer;
-    border: 2px solid transparent;
-  }
-
-  div[data-testid="stProgress"] > div { background-color: #6366f1 !important; }
 </style>
 """, unsafe_allow_html=True)
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── helpers ───────────────────────────────────────────────────────────────────
 
-def fmt_time(seconds: float) -> str:
-    m, s = int(seconds) // 60, seconds % 60
-    return f"{m:02d}:{s:05.2f}"
-
+def fmt_time(s: float) -> str:
+    return f"{int(s)//60:02d}:{s%60:05.2f}"
 
 def action_badge(action: str) -> str:
-    meta = ACTION_META.get(action, ACTION_META["other"])
-    return (
-        f'<span class="event-badge" '
-        f'style="background:{meta["color"]}22;color:{meta["color"]};'
-        f'border:1px solid {meta["color"]}44">'
-        f'{meta["icon"]} {meta["label"]}</span>'
-    )
+    m = ACTION_META.get(action, ACTION_META["other"])
+    return (f'<span class="event-badge" '
+            f'style="background:{m["color"]}22;color:{m["color"]};border:1px solid {m["color"]}44">'
+            f'{m["icon"]} {m["label"]}</span>')
 
-
-def poll_status(job_id: str) -> dict:
+def poll(job_id: str) -> dict:
     try:
-        r = httpx.get(f"{API_URL}/status/{job_id}", timeout=10)
-        return r.json()
+        return httpx.get(f"{API_URL}/status/{job_id}", timeout=10).json()
     except Exception:
         return {"status": "error", "message": "API unreachable"}
 
-
-def events_to_df(events: list[dict]) -> pd.DataFrame:
+def events_to_df(events):
     rows = []
     for ev in events:
-        meta = ACTION_META.get(ev["action_type"], ACTION_META["other"])
+        a = ev["action_type"]
+        m = ACTION_META.get(a, ACTION_META["other"])
         rows.append({
-            "Action":     ev["action_type"],
-            "Label":      meta["label"],
-            "Icon":       meta["icon"],
-            "Color":      meta["color"],
-            "Start (s)":  round(ev["start_time"], 2),
-            "End (s)":    round(ev["end_time"], 2),
-            "Duration":   round(ev["end_time"] - ev["start_time"], 2),
-            "Confidence": round(ev["confidence"], 2),
-            "Start fmt":  fmt_time(ev["start_time"]),
-            "End fmt":    fmt_time(ev["end_time"]),
+            "Action":    a,
+            "Label":     m["label"],
+            "Color":     m["color"],
+            "Start":     round(ev["start_time"], 2),
+            "End":       round(ev["end_time"],   2),
+            "Duration":  round(ev["end_time"] - ev["start_time"], 2),
+            "Conf":      round(ev.get("confidence", 0), 2),
+            "StartFmt":  fmt_time(ev["start_time"]),
         })
     return pd.DataFrame(rows)
 
 
-# ── Session state ─────────────────────────────────────────────────────────────
-for key, default in [
-    ("job_id", None), ("result", None), ("polling", False),
-    ("selected_actions", list(ACTION_META.keys())),
-    ("selected_players", []),
-]:
-    if key not in st.session_state:
-        st.session_state[key] = default
+# ── session state ─────────────────────────────────────────────────────────────
+
+for k, v in [("job_id", None), ("result", None), ("polling", False)]:
+    if k not in st.session_state:
+        st.session_state[k] = v
 
 
-# ── Hero ──────────────────────────────────────────────────────────────────────
+# ── hero ──────────────────────────────────────────────────────────────────────
+
 st.markdown("""
 <div class="hero">
   <h1>🏐 Volleyball Analyzer</h1>
@@ -176,27 +121,22 @@ st.markdown("""
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SECTION 1 — UPLOAD
+#  UPLOAD
 # ══════════════════════════════════════════════════════════════════════════════
-if st.session_state.result is None:
+if st.session_state.result is None and not st.session_state.polling:
 
     st.markdown("### 📤 Upload a match video")
     uploaded = st.file_uploader(
-        "Drop your video here",
-        type=["mp4", "avi", "mov", "mkv"],
+        "Drop your video here", type=["mp4", "avi", "mov", "mkv"],
         label_visibility="collapsed",
     )
 
     if uploaded:
         col_info, col_btn = st.columns([3, 1])
-        with col_info:
-            size_mb = len(uploaded.getvalue()) / 1024**2
-            st.info(f"**{uploaded.name}** — {size_mb:.1f} MB")
-        with col_btn:
-            analyze = st.button("🚀 Analyze", use_container_width=True, type="primary")
+        col_info.info(f"**{uploaded.name}** — {len(uploaded.getvalue())/1024**2:.1f} MB")
 
-        if analyze:
-            with st.spinner("Uploading video..."):
+        if col_btn.button("🚀 Analyze", use_container_width=True, type="primary"):
+            with st.spinner("Uploading..."):
                 try:
                     r = httpx.post(
                         f"{API_URL}/upload",
@@ -204,8 +144,7 @@ if st.session_state.result is None:
                         timeout=120,
                     )
                     r.raise_for_status()
-                    data = r.json()
-                    st.session_state.job_id  = data["job_id"]
+                    st.session_state.job_id  = r.json()["job_id"]
                     st.session_state.polling = True
                     st.rerun()
                 except Exception as e:
@@ -213,69 +152,85 @@ if st.session_state.result is None:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SECTION 2 — PROCESSING PROGRESS
+#  PROGRESS POLLING
 # ══════════════════════════════════════════════════════════════════════════════
 if st.session_state.polling and st.session_state.result is None:
 
     st.markdown("### ⚙️ Analyzing your video...")
+    bar  = st.progress(0.0)
+    info = st.empty()
 
-    progress_bar  = st.progress(0.0)
-    status_text   = st.empty()
-    step_col1, step_col2, step_col3, step_col4 = st.columns(4)
-
-    steps = [
-        (step_col1, "📥 Download",   0.05),
-        (step_col2, "🤖 Detection",  0.50),
-        (step_col3, "🎯 Tracking",   0.80),
-        (step_col4, "✅ Finalizing", 0.95),
+    STEPS = [
+        (0.05, "📥 Download"),
+        (0.50, "🤖 Detection"),
+        (0.85, "🎯 Tracking"),
+        (0.95, "✅ Finalizing"),
     ]
 
-    while True:
-        status = poll_status(st.session_state.job_id)
-        progress = status.get("progress", 0.0)
-        progress_bar.progress(min(progress, 1.0))
-        status_text.markdown(f"*{status.get('message', 'Processing...')}*")
+    # One st.empty() per step — allows in-place updates (no duplication)
+    cols = st.columns(len(STEPS))
+    step_slots = []
+    for col, (_, label) in zip(cols, STEPS):
+        with col:
+            slot = st.empty()
+            slot.markdown(f"⏳ **{label}**")
+            step_slots.append(slot)
 
-        for col, label, threshold in steps:
-            icon = "✅" if progress >= threshold else "⏳"
-            col.markdown(f"**{icon} {label}**")
+    steps_done  = [False] * len(STEPS)
+    err_streak  = 0          # consecutive poll failures
+    MAX_ERRORS  = 5          # tolerate brief network blips (e.g. during ffmpeg)
+
+    while True:
+        status = poll(st.session_state.job_id)
+
+        if status["status"] == "error":
+            err_streak += 1
+            if err_streak >= MAX_ERRORS:
+                st.error(f"❌ {status.get('message', 'Unknown error')}")
+                if st.button("↩ Try again"):
+                    st.session_state.polling = False
+                break
+            time.sleep(2)
+            continue
+
+        err_streak = 0
+        progress   = float(status.get("progress", 0.0))
+
+        bar.progress(min(progress, 1.0))
+        info.markdown(f"*{status.get('message', 'Processing...')}*")
+
+        # Mark a step done only the first time its threshold is crossed
+        for i, (thr, label) in enumerate(STEPS):
+            if not steps_done[i] and progress >= thr:
+                steps_done[i] = True
+                step_slots[i].markdown(f"✅ **{label}**")
 
         if status["status"] == "done":
             st.session_state.result  = status.get("result", {})
             st.session_state.polling = False
-            st.success("✅ Analysis complete!")
-            time.sleep(0.5)
             st.rerun()
-        elif status["status"] == "error":
-            st.error(f"❌ Error: {status.get('message', 'Unknown error')}")
-            if st.button("Try again"):
-                st.session_state.job_id  = None
-                st.session_state.polling = False
-            break
 
         time.sleep(2)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  SECTION 3 — RESULTS
+#  RESULTS DASHBOARD
 # ══════════════════════════════════════════════════════════════════════════════
 if st.session_state.result:
     result = st.session_state.result
     events = result.get("events", [])
     df     = events_to_df(events)
 
-    # ── Top stats row ─────────────────────────────────────────────────────────
+    # ── Stats row ─────────────────────────────────────────────────────────────
     st.markdown("### 📊 Match Overview")
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-    stats = [
-        (c1, len(events),                          "Total Events"),
-        (c2, fmt_time(result.get("duration", 0)),  "Duration"),
-        (c3, result.get("fps", 0),                 "FPS"),
-        (c4, result.get("team_a_color","?").title(),"Team A Jersey"),
-        (c5, result.get("team_b_color","?").title(),"Team B Jersey"),
-    ]
-    for col, val, lbl in stats:
+    cols = st.columns(5)
+    for col, val, lbl in [
+        (cols[0], len(events),                            "Total Events"),
+        (cols[1], fmt_time(result.get("duration", 0)),   "Duration"),
+        (cols[2], f"{result.get('fps', 0):.0f}",         "FPS"),
+        (cols[3], result.get("team_a_color", "?").title(),"Team A"),
+        (cols[4], result.get("team_b_color", "?").title(),"Team B"),
+    ]:
         col.markdown(
             f'<div class="stat-card"><div class="val">{val}</div>'
             f'<div class="lbl">{lbl}</div></div>',
@@ -284,133 +239,146 @@ if st.session_state.result:
 
     st.divider()
 
-    # ── Main layout: video left, filters+events right ────────────────────────
+    # ── Main columns ──────────────────────────────────────────────────────────
+    # filter_col is filled FIRST in code so `filtered` exists before vid_col
+    # renders the timeline. Streamlit places columns left-to-right by creation
+    # order (vid_col, filter_col), regardless of which `with` block runs first.
     vid_col, filter_col = st.columns([3, 2], gap="large")
 
-    with vid_col:
-        st.markdown("#### 🎬 Annotated Video")
-        try:
-            r = httpx.get(f"{API_URL}/video/{st.session_state.job_id}", timeout=30)
-            if r.status_code == 200:
-                st.video(r.content)
-            else:
-                st.warning("Annotated video not available yet.")
-        except Exception:
-            st.info("Video stream not available in this environment.")
-
-        # Timeline chart
-        if not df.empty:
-            st.markdown("#### 📅 Event Timeline")
-            fig = px.timeline(
-                df,
-                x_start="Start (s)", x_end="End (s)",
-                y="Label", color="Action",
-                color_discrete_map={a: ACTION_META[a]["color"] for a in ACTION_META},
-                height=280,
-            )
-            fig.update_layout(
-                paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
-                font_color="#94a3b8",
-                xaxis_title="Time (seconds)", yaxis_title="",
-                showlegend=False,
-                margin=dict(l=10, r=10, t=10, b=30),
-            )
-            fig.update_xaxes(gridcolor="#1e293b")
-            fig.update_yaxes(gridcolor="#1e293b")
-            st.plotly_chart(fig, use_container_width=True)
-
+    # ── FILTERS (compute filtered before drawing the timeline) ────────────────
     with filter_col:
         st.markdown("#### 🔍 Filters")
 
-        # Action type filter
-        st.markdown("**Action types**")
         action_counts = df["Action"].value_counts().to_dict() if not df.empty else {}
-        selected = st.session_state.selected_actions.copy()
-
-        cols = st.columns(3)
+        selected = []
+        grid = st.columns(3)
         for i, (action, meta) in enumerate(ACTION_META.items()):
             count = action_counts.get(action, 0)
-            toggled = cols[i % 3].checkbox(
+            if grid[i % 3].checkbox(
                 f"{meta['icon']} {meta['label']} ({count})",
-                value=(action in selected),
+                value=True,
                 key=f"chk_{action}",
-            )
-            if toggled and action not in selected:
+            ):
                 selected.append(action)
-            elif not toggled and action in selected:
-                selected.remove(action)
 
-        st.session_state.selected_actions = selected
-
-        # Time range filter
-        st.markdown("**Time range**")
-        duration = result.get("duration", 0)
+        duration = float(result.get("duration", 0))
         if duration > 0:
             t_min, t_max = st.slider(
-                "Select interval (seconds)",
-                0.0, float(duration),
-                (0.0, float(duration)),
-                step=0.5,
-                label_visibility="collapsed",
+                "Time range (s)", 0.0, duration, (0.0, duration), step=0.5,
             )
         else:
             t_min, t_max = 0.0, 0.0
 
-        # Confidence filter
-        min_conf = st.slider("Minimum confidence", 0.0, 1.0, 0.5, 0.05)
+        min_conf = st.slider(
+            "Min confidence — hide low-confidence events (classifier certainty 0→1)",
+            0.0, 1.0, 0.4, 0.05,
+        )
 
-        st.divider()
-
-        # ── Filtered event list ───────────────────────────────────────
-        st.markdown("#### 📋 Events")
-
-        if df.empty:
-            st.info("No events detected in this video.")
-        else:
+        # Compute filtered DataFrame here so vid_col can use it too
+        if not df.empty:
             filtered = df[
                 df["Action"].isin(selected) &
-                (df["Start (s)"] >= t_min) &
-                (df["End (s)"] <= t_max) &
-                (df["Confidence"] >= min_conf)
-            ].reset_index(drop=True)
+                (df["Start"] >= t_min) &
+                (df["End"] <= t_max) &
+                (df["Conf"] >= min_conf)
+            ]
+        else:
+            filtered = df
 
-            st.caption(f"{len(filtered)} events shown")
+        st.divider()
+        st.markdown("#### 📋 Events")
 
+        if filtered.empty:
+            st.info("No events match the current filters.")
+        else:
+            st.caption(f"{len(filtered)} event(s) shown")
             for _, row in filtered.iterrows():
-                badge = action_badge(row["Action"])
-                st.markdown(f"""
-<div class="event-row">
-  <span class="event-time">⏱ {row['Start fmt']}</span>
-  {badge}
-  <span class="event-conf">{int(row['Confidence']*100)}%</span>
-  <span class="event-desc">{round(row['Duration'],1)}s</span>
-</div>
-                """, unsafe_allow_html=True)
+                st.markdown(
+                    f'<div class="event-row">'
+                    f'<span class="event-time">⏱ {row["StartFmt"]}</span>'
+                    f'{action_badge(row["Action"])}'
+                    f'<span class="event-dur">{row["Duration"]:.1f}s &nbsp; {int(row["Conf"]*100)}%</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
 
-        # ── Action breakdown chart ────────────────────────────────────
+        # ── ACTION BREAKDOWN (uses filtered) ─────────────────────────────────
         st.markdown("#### 📈 Action Breakdown")
-        if not df.empty:
-            counts = df[df["Action"].isin(selected)]["Action"].value_counts()
+        if filtered.empty:
+            st.info("No data for current filters.")
+        else:
+            counts = filtered["Action"].value_counts()
             fig2 = go.Figure(go.Bar(
-                x=[ACTION_META[a]["label"] for a in counts.index],
+                x=[ACTION_META.get(a, {}).get("label", a) for a in counts.index],
                 y=counts.values,
-                marker_color=[ACTION_META[a]["color"] for a in counts.index],
+                marker_color=[ACTION_META.get(a, {}).get("color", "#888") for a in counts.index],
                 text=counts.values,
                 textposition="outside",
             ))
             fig2.update_layout(
                 paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
-                font_color="#94a3b8",
-                showlegend=False,
-                margin=dict(l=0, r=0, t=10, b=30),
-                height=220,
+                font_color="#94a3b8", showlegend=False,
+                margin=dict(l=0, r=0, t=10, b=30), height=220,
                 yaxis=dict(gridcolor="#1e293b"),
             )
             st.plotly_chart(fig2, use_container_width=True)
 
-    # ── Reset button ──────────────────────────────────────────────────────────
-    st.divider()
-    if st.button("📤 Analyze another video", use_container_width=False):
-        for key in ["job_id", "result", "polling"]:
-            st.session_state[key] = None if key != "polling" else False
+    # ── VIDEO + TIMELINE (uses filtered for the timeline) ─────────────────────
+    with vid_col:
+        st.markdown("#### 🎬 Annotated Video")
+        try:
+            r = httpx.get(f"{API_URL}/video/{st.session_state.job_id}", timeout=60)
+            if r.status_code == 200:
+                st.video(r.content)
+            else:
+                st.info(f"Video not ready (HTTP {r.status_code}). "
+                        f"Check MinIO at http://localhost:9001 "
+                        f"(bucket: output-videos, login: volleyball / volleyball123)")
+        except Exception as e:
+            st.warning(f"Could not load video: {e}")
+
+        st.markdown("#### 📅 Event Timeline")
+        if filtered.empty:
+            st.info("No events match the current filters.")
+        else:
+            fig = go.Figure()
+            duration_total = result.get("duration", 1)
+
+            for _, row in filtered.iterrows():
+                m = ACTION_META.get(row["Action"], ACTION_META["other"])
+                fig.add_trace(go.Bar(
+                    name=m["label"],
+                    x=[row["Duration"]],
+                    y=[m["label"]],
+                    base=[row["Start"]],
+                    orientation="h",
+                    marker_color=m["color"],
+                    text=f"{row['StartFmt']}  {m['icon']}",
+                    textposition="inside",
+                    hovertemplate=(
+                        f"<b>{m['label']}</b><br>"
+                        f"Start: {row['StartFmt']}<br>"
+                        f"Duration: {row['Duration']:.1f}s<br>"
+                        f"Confidence: {int(row['Conf']*100)}%<extra></extra>"
+                    ),
+                ))
+
+            fig.update_layout(
+                barmode="overlay",
+                paper_bgcolor="#0f172a",
+                plot_bgcolor="#0f172a",
+                font_color="#94a3b8",
+                xaxis=dict(title="Time (seconds)", range=[0, duration_total],
+                           gridcolor="#1e293b"),
+                yaxis=dict(title="", gridcolor="#1e293b"),
+                showlegend=False,
+                height=max(180, len(filtered["Action"].unique()) * 45 + 60),
+                margin=dict(l=10, r=10, t=10, b=40),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    if st.button("📤 Analyze another video"):
+        for k in ["job_id", "result"]:
+            st.session_state[k] = None
+        st.session_state.polling = False
         st.rerun()
